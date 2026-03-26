@@ -22,7 +22,35 @@ from handlers import (
     handle_labs,
     handle_scores,
 )
-from services import LMSAPIClient, LLMAPIClient
+from services import LMSAPIClient, LLMAPIClient, LMSAPIError
+
+
+# ---------------------------------------------------------------------------
+# Helper Messages
+# ---------------------------------------------------------------------------
+
+
+def get_unknown_command_message(command: str) -> str:
+    """Return a helpful message for unknown commands.
+
+    Args:
+        command: The unknown command string.
+
+    Returns:
+        Helpful message suggesting available commands.
+    """
+    return (
+        f"❓ Unknown command: {command}\n\n"
+        "I didn't understand that. Here are the available commands:\n\n"
+        "/start - Welcome message\n"
+        "/help - Show all available commands\n"
+        "/health - Check backend status\n"
+        "/labs - List available labs\n"
+        "/scores <lab_id> - Get scores for a lab (e.g., /scores lab-04)\n\n"
+        "You can also ask in natural language:\n"
+        "• What labs are available?\n"
+        "• Show my scores for lab 4"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -75,11 +103,16 @@ def run_test_mode(command: str) -> int:
     Returns:
         Exit code (0 for success, 1 for error).
     """
+    # Handle empty command
+    if not command or not command.strip():
+        print(get_unknown_command_message("(empty)"))
+        return 0
+
     cmd, args = parse_command(command)
 
     if not cmd:
-        print("Error: Empty command", file=sys.stderr)
-        return 1
+        print(get_unknown_command_message(command))
+        return 0
 
     handler = get_handler_for_command(cmd)
 
@@ -102,13 +135,15 @@ def run_test_mode(command: str) -> int:
                         result = handler()
                     print(result)
                     return 0
-                print(f"Unknown command: {command}", file=sys.stderr)
-                return 1
+                # Unknown intent - return helpful message
+                print(get_unknown_command_message(command))
+                return 0
 
             return asyncio.run(classify_and_handle())
 
-        print(f"Unknown command: {command}", file=sys.stderr)
-        return 1
+        # No LLM configured - return helpful message
+        print(get_unknown_command_message(command))
+        return 0
 
     # Call handler
     if args or cmd == "scores":
@@ -137,33 +172,111 @@ async def cmd_help(message: types.Message):
 
 async def cmd_health(message: types.Message):
     """Handle /health command."""
-    # Real health check with LMS API
-    if settings.lms_api_base_url and settings.lms_api_key:
-        lms_client = LMSAPIClient(
-            base_url=settings.lms_api_base_url,
-            api_key=settings.lms_api_key,
+    if not settings.lms_api_base_url or not settings.lms_api_key:
+        await message.answer(
+            "⚠️ LMS API configuration missing.\n\n"
+            "Please set LMS_API_BASE_URL and LMS_API_KEY in .env.bot.secret"
         )
-        is_healthy = await lms_client.health_check()
-        status = "🟢 OK" if is_healthy else "🔴 Unavailable"
-        await message.answer(f"Backend status: {status}")
-    else:
-        await message.answer(handle_health())
+        return
+
+    lms_client = LMSAPIClient(
+        base_url=settings.lms_api_base_url,
+        api_key=settings.lms_api_key,
+    )
+
+    try:
+        result = await lms_client.health_check()
+        status = f"🟢 Backend is healthy. {result['item_count']} items available."
+        await message.answer(status)
+    except LMSAPIError as e:
+        await message.answer(f"🔴 Backend error: {e.message}")
 
 
 async def cmd_labs(message: types.Message):
     """Handle /labs command."""
-    await message.answer(handle_labs())
+    if not settings.lms_api_base_url or not settings.lms_api_key:
+        await message.answer(
+            "⚠️ LMS API configuration missing.\n\n"
+            "Please set LMS_API_BASE_URL and LMS_API_KEY in .env.bot.secret"
+        )
+        return
+
+    lms_client = LMSAPIClient(
+        base_url=settings.lms_api_base_url,
+        api_key=settings.lms_api_key,
+    )
+
+    try:
+        labs = await lms_client.get_labs()
+        if not labs:
+            await message.answer("📋 No labs available.\n\nThe backend may not have any labs yet.")
+            return
+
+        lines = ["📚 Available labs:"]
+        for lab in labs:
+            title = lab.get("title", "Unknown")
+            lines.append(f"• {title}")
+
+        await message.answer("\n".join(lines))
+    except LMSAPIError as e:
+        await message.answer(f"🔴 Backend error: {e.message}")
 
 
 async def cmd_scores(message: types.Message):
     """Handle /scores command."""
+    if not settings.lms_api_base_url or not settings.lms_api_key:
+        await message.answer(
+            "⚠️ LMS API configuration missing.\n\n"
+            "Please set LMS_API_BASE_URL and LMS_API_KEY in .env.bot.secret"
+        )
+        return
+
     args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else ""
-    await message.answer(handle_scores(args))
+
+    if not args or not args.strip():
+        await message.answer(
+            "❌ Please specify a lab ID.\n\n"
+            "Usage: /scores <lab_id>\n"
+            "Example: /scores lab-04"
+        )
+        return
+
+    lab_id = args.strip()
+    lms_client = LMSAPIClient(
+        base_url=settings.lms_api_base_url,
+        api_key=settings.lms_api_key,
+    )
+
+    try:
+        pass_rates = await lms_client.get_pass_rates(lab_id)
+        if not pass_rates:
+            await message.answer(f"📊 No pass rate data available for {lab_id}.")
+            return
+
+        lines = [f"📈 Pass rates for {lab_id}:"]
+        for item in pass_rates:
+            task_title = item.get("task", "Unknown task")
+            pass_rate = item.get("pass_rate", 0)
+            attempts = item.get("attempts", 0)
+            lines.append(f"• {task_title}: {pass_rate:.1f}% ({attempts} attempts)")
+
+        await message.answer("\n".join(lines))
+    except LMSAPIError as e:
+        await message.answer(f"🔴 Backend error: {e.message}")
 
 
 async def handle_message(message: types.Message):
     """Handle natural language messages with LLM intent classification."""
     if not settings.llm_api_base_url or not settings.llm_api_key:
+        # No LLM configured - respond with helpful message for unknown inputs
+        await message.answer(
+            "🤔 I'm not sure what you mean. Try one of these commands:\n\n"
+            "/start - Welcome message\n"
+            "/help - Show all available commands\n"
+            "/health - Check backend status\n"
+            "/labs - List available labs\n"
+            "/scores <lab_id> - Get scores for a lab"
+        )
         return
 
     llm_client = LLMAPIClient(
@@ -181,6 +294,9 @@ async def handle_message(message: types.Message):
             await message.answer(handler(args))
         else:
             await message.answer(handler())
+    else:
+        # Unknown intent - return helpful message
+        await message.answer(get_unknown_command_message(message.text))
 
 
 def run_telegram_mode() -> None:
