@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     )
     autochecker_email: str = Field(default="", alias="AUTOCHECKER_API_LOGIN")
     autochecker_password: str = Field(default="", alias="AUTOCHECKER_API_PASSWORD")
+    autochecker_timeout: int = Field(default=600, alias="AUTOCHECKER_API_TIMEOUT")
 
     db_host: str = Field(default="localhost", alias="DB_HOST")
     db_port: int = Field(default=5432, alias="DB_PORT")

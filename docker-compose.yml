@@ -8,6 +8,9 @@ services:
     restart: unless-stopped
     networks:
       - lms-network
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - ${BACKEND_HOST_ADDRESS:?'BACKEND_HOST_ADDRESS is required'}:${BACKEND_HOST_PORT:?'BACKEND_HOST_PORT is required'}:${BACKEND_CONTAINER_PORT}
     expose:
