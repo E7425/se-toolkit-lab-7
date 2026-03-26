@@ -23,6 +23,7 @@ from handlers import (
     handle_scores,
 )
 from services import LMSAPIClient, LLMAPIClient, LMSAPIError
+from services.intent_router import IntentRouter
 
 
 # ---------------------------------------------------------------------------
@@ -110,48 +111,51 @@ def run_test_mode(command: str) -> int:
 
     cmd, args = parse_command(command)
 
-    if not cmd:
-        print(get_unknown_command_message(command))
-        return 0
+    # Check if it's a slash command
+    if command.startswith("/"):
+        if not cmd:
+            print(get_unknown_command_message(command))
+            return 0
 
-    handler = get_handler_for_command(cmd)
+        handler = get_handler_for_command(cmd)
 
-    if handler is None:
-        # Try LLM intent classification for natural language queries
-        if settings.llm_api_base_url and settings.llm_api_key:
-            llm_client = LLMAPIClient(
-                base_url=settings.llm_api_base_url,
-                api_key=settings.llm_api_key,
-                model=settings.llm_api_model,
-            )
+        if handler:
+            # Known slash command - use handler
+            if args or cmd == "scores":
+                result = handler(args)
+            else:
+                result = handler()
+            print(result)
+            return 0
 
-            async def classify_and_handle():
-                intent = await llm_client.classify_intent(command)
-                handler = get_handler_for_command(intent)
-                if handler:
-                    if args or intent == "scores":
-                        result = handler(args if args else "")
-                    else:
-                        result = handler()
-                    print(result)
+    # Not a known slash command - try LLM intent router
+    if settings.llm_api_base_url and settings.llm_api_key and settings.lms_api_base_url and settings.lms_api_key:
+        try:
+            router = IntentRouter()
+
+            async def route_query():
+                result = await router.route(command)
+                # Check if it's an LLM connection error
+                if result.startswith("LLM error:"):
+                    # Fallback: suggest using slash commands
+                    print(f"⚠️ LLM service unavailable. Please use slash commands:\n\n/help - Show available commands\n/labs - List labs\n/scores lab-04 - Get scores")
                     return 0
-                # Unknown intent - return helpful message
-                print(get_unknown_command_message(command))
+                print(result)
                 return 0
 
-            return asyncio.run(classify_and_handle())
+            return asyncio.run(route_query())
+        except ValueError as e:
+            # Configuration error
+            print(f"Configuration error: {e}", file=sys.stderr)
+            print(get_unknown_command_message(command))
+            return 0
+        except Exception as e:
+            print(f"LLM router error: {type(e).__name__}: {e}", file=sys.stderr)
+            print(f"⚠️ LLM service unavailable. Please use slash commands:\n\n/help - Show available commands\n/labs - List labs\n/scores lab-04 - Get scores")
+            return 0
 
-        # No LLM configured - return helpful message
-        print(get_unknown_command_message(command))
-        return 0
-
-    # Call handler
-    if args or cmd == "scores":
-        result = handler(args)
-    else:
-        result = handler()
-
-    print(result)
+    # No LLM configured - return helpful message
+    print(get_unknown_command_message(command))
     return 0
 
 
@@ -266,7 +270,7 @@ async def cmd_scores(message: types.Message):
 
 
 async def handle_message(message: types.Message):
-    """Handle natural language messages with LLM intent classification."""
+    """Handle natural language messages with LLM tool calling."""
     if not settings.llm_api_base_url or not settings.llm_api_key:
         # No LLM configured - respond with helpful message for unknown inputs
         await message.answer(
@@ -279,24 +283,21 @@ async def handle_message(message: types.Message):
         )
         return
 
-    llm_client = LLMAPIClient(
-        base_url=settings.llm_api_base_url,
-        api_key=settings.llm_api_key,
-        model=settings.llm_api_model,
-    )
+    if not settings.lms_api_base_url or not settings.lms_api_key:
+        await message.answer(
+            "⚠️ LMS API configuration missing.\n\n"
+            "Please set LMS_API_BASE_URL and LMS_API_KEY in .env.bot.secret"
+        )
+        return
 
-    intent = await llm_client.classify_intent(message.text)
-    handler = get_handler_for_command(intent)
-
-    if handler:
-        if intent == "scores":
-            args = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else ""
-            await message.answer(handler(args))
-        else:
-            await message.answer(handler())
-    else:
-        # Unknown intent - return helpful message
-        await message.answer(get_unknown_command_message(message.text))
+    try:
+        router = IntentRouter()
+        result = await router.route(message.text)
+        await message.answer(result)
+    except ValueError as e:
+        await message.answer(f"Configuration error: {e}")
+    except Exception as e:
+        await message.answer(f"🤔 I encountered an error: {type(e).__name__}. Please try again or use /help for available commands.")
 
 
 def run_telegram_mode() -> None:
