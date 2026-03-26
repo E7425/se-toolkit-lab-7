@@ -1,5 +1,10 @@
 """Handler for /scores command."""
 
+import asyncio
+
+from config import settings
+from services.lms_api import LMSAPIClient, LMSAPIError
+
 
 def handle_scores(args: str = "") -> str:
     """Handle /scores command.
@@ -8,7 +13,7 @@ def handle_scores(args: str = "") -> str:
         args: Lab ID (e.g., "lab-04") or empty string.
 
     Returns:
-        Score distribution for the specified lab.
+        Pass rates for the specified lab or error message.
     """
     if not args or not args.strip():
         return (
@@ -17,15 +22,34 @@ def handle_scores(args: str = "") -> str:
             "Example: /scores lab-04"
         )
 
-    lab_id = args.strip()
+    if not settings.lms_api_base_url or not settings.lms_api_key:
+        return (
+            "⚠️ LMS API configuration missing.\n\n"
+            "Please set LMS_API_BASE_URL and LMS_API_KEY in .env.bot.secret"
+        )
 
-    # Placeholder - will be implemented with LMS API integration
-    return (
-        f"📊 Scores for {lab_id} (placeholder)\n\n"
-        "Score Distribution:\n"
-        "• 90-100: 5 students\n"
-        "• 75-89: 12 students\n"
-        "• 50-74: 8 students\n"
-        "• 0-49: 3 students\n\n"
-        "Your progress: Not implemented yet"
+    lab_id = args.strip()
+    client = LMSAPIClient(
+        base_url=settings.lms_api_base_url,
+        api_key=settings.lms_api_key,
     )
+
+    async def fetch_scores():
+        try:
+            pass_rates = await client.get_pass_rates(lab_id)
+            if not pass_rates:
+                return f"📊 No pass rate data available for {lab_id}."
+
+            # Format: "Lab Name — XX.X% (N attempts)"
+            lines = [f"📈 Pass rates for {lab_id}:"]
+            for item in pass_rates:
+                task_title = item.get("task", "Unknown task")
+                pass_rate = item.get("pass_rate", 0)
+                attempts = item.get("attempts", 0)
+                lines.append(f"• {task_title}: {pass_rate:.1f}% ({attempts} attempts)")
+
+            return "\n".join(lines)
+        except LMSAPIError as e:
+            return f"🔴 Backend error: {e.message}"
+
+    return asyncio.run(fetch_scores())
